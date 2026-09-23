@@ -2,12 +2,50 @@ import Charts
 import AppKit
 import SwiftUI
 
+private enum UsagePeriod: String, CaseIterable, Identifiable {
+    case day
+    case week
+
+    var id: String { rawValue }
+    var title: String { self == .day ? "日" : "周" }
+    var calendarComponent: Calendar.Component { self == .day ? .day : .weekOfYear }
+}
+
 struct DashboardView: View {
     @EnvironmentObject private var store: StatsStore
+    @State private var usagePeriod: UsagePeriod = .day
+    @State private var selectedDate = Date()
+    @State private var isDatePickerPresented = false
 
     private var today: DayStats { store.stats(for: Date()) }
-    private var categories: [(name: String, count: Int)] { store.categoryCounts(for: today) }
+    private var selectedStats: DayStats {
+        usagePeriod == .day ? store.stats(for: selectedDate) : store.stats(forWeekContaining: selectedDate)
+    }
+    private var trendDays: [DayStats] {
+        usagePeriod == .week ? store.days(inWeekContaining: selectedDate) : store.lastSevenDays
+    }
+    private var categories: [(name: String, count: Int)] { store.categoryCounts(for: selectedStats) }
     private var largestCategory: Int { max(categories.map(\.count).max() ?? 1, 1) }
+    private var selectedPeriodLabel: String {
+        switch usagePeriod {
+        case .day:
+            return selectedDate.formatted(date: .numeric, time: .omitted)
+        case .week:
+            let calendar = Calendar.current
+            guard let interval = calendar.dateInterval(of: .weekOfYear, for: selectedDate) else {
+                return selectedDate.formatted(date: .numeric, time: .omitted)
+            }
+            let lastDay = calendar.date(byAdding: .day, value: -1, to: interval.end) ?? interval.end
+            let format = Date.FormatStyle.dateTime.month(.defaultDigits).day()
+            return "\(interval.start.formatted(format))–\(lastDay.formatted(format))"
+        }
+    }
+    private var canAdvancePeriod: Bool {
+        guard let next = Calendar.current.date(byAdding: usagePeriod.calendarComponent, value: 1, to: selectedDate) else {
+            return false
+        }
+        return Calendar.current.startOfDay(for: next) <= Calendar.current.startOfDay(for: Date())
+    }
 
     var body: some View {
         ScrollView {
@@ -15,9 +53,13 @@ struct DashboardView: View {
                 header
                 permissionCard
                 startupCard
-                todayCard
+                historyFilterCard
+                summaryCard
                 hourlyCard
-                KeyboardHeatmapView(day: today)
+                KeyboardHeatmapView(
+                    day: selectedStats,
+                    periodLabel: usagePeriod == .day ? "所选日期" : "所选周"
+                )
                 weeklyCard
                 categoryCard
                 footer
@@ -29,6 +71,79 @@ struct DashboardView: View {
         .onAppear {
             store.refreshLaunchAtLoginStatus()
             store.refreshPermission()
+        }
+    }
+
+    private var historyFilterCard: some View {
+        HStack(spacing: 6) {
+            Picker("范围", selection: $usagePeriod) {
+                ForEach(UsagePeriod.allCases) { period in
+                    Text(period.title).tag(period)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 76)
+
+            Button {
+                movePeriod(by: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .buttonStyle(.plain)
+            .help("上一个\(usagePeriod == .day ? "日期" : "星期")")
+
+            Text(selectedPeriodLabel)
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+
+            Button(usagePeriod == .day ? "今天" : "本周") {
+                selectedDate = Date()
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                movePeriod(by: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .buttonStyle(.plain)
+            .disabled(!canAdvancePeriod)
+            .help("下一个\(usagePeriod == .day ? "日期" : "星期")")
+
+            Button {
+                isDatePickerPresented = true
+            } label: {
+                Image(systemName: "calendar")
+            }
+            .buttonStyle(.plain)
+            .help("选择日期")
+            .popover(isPresented: $isDatePickerPresented, arrowEdge: .bottom) {
+                DatePicker(
+                    "选择日期",
+                    selection: $selectedDate,
+                    in: Date.distantPast...Date(),
+                    displayedComponents: .date
+                )
+                .datePickerStyle(.graphical)
+                .padding(8)
+                .frame(width: 280)
+            }
+        }
+        .font(.caption)
+        .padding(9)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func movePeriod(by amount: Int) {
+        guard let next = Calendar.current.date(
+            byAdding: usagePeriod.calendarComponent,
+            value: amount,
+            to: selectedDate
+        ) else { return }
+        if amount < 0 || Calendar.current.startOfDay(for: next) <= Calendar.current.startOfDay(for: Date()) {
+            selectedDate = next
         }
     }
 
@@ -100,22 +215,23 @@ struct DashboardView: View {
         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private var todayCard: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+    private var summaryCard: some View {
+        let usedKeyCount = selectedStats.keyCodeCounts.values.filter { $0 > 0 }.count
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("今天的按键次数")
+                Text(usagePeriod == .day ? "所选日期按键次数" : "所选周按键次数")
                     .font(.subheadline).foregroundStyle(.secondary)
-                Text(store.todayCount.formatted())
+                Text(selectedStats.total.formatted())
                     .font(.system(size: 36, weight: .bold, design: .rounded))
                     .contentTransition(.numericText())
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                Text("近 7 天平均")
+                Text("有记录的键位")
                     .font(.caption).foregroundStyle(.secondary)
-                Text((store.sevenDayTotal / 7).formatted())
+                Text(usedKeyCount.formatted())
                     .font(.system(size: 20, weight: .semibold, design: .rounded))
-                Text("次 / 天")
+                Text("种")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
@@ -149,11 +265,14 @@ struct DashboardView: View {
 
     private var hourlyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionTitle("今天每小时", subtitle: "按键次数")
+            sectionTitle(
+                usagePeriod == .day ? "所选日期每小时" : "所选周按小时累计",
+                subtitle: "按键次数"
+            )
             Chart(0..<24, id: \.self) { hour in
                 BarMark(
                     x: .value("小时", hour),
-                    y: .value("按键次数", store.hourlyCount(hour))
+                    y: .value("按键次数", selectedStats.hourlyCounts[String(format: "%02d", hour)] ?? 0)
                 )
                 .foregroundStyle(Color.accentColor.gradient)
                 .cornerRadius(3)
@@ -174,8 +293,11 @@ struct DashboardView: View {
 
     private var weeklyCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            sectionTitle("近 7 天", subtitle: "每天的总次数")
-            Chart(store.lastSevenDays) { day in
+            sectionTitle(
+                usagePeriod == .week ? "所选周逐日" : "近 7 天",
+                subtitle: "每天的总次数"
+            )
+            Chart(trendDays) { day in
                 BarMark(
                     x: .value("日期", day.dateKey),
                     y: .value("按键次数", day.total)
@@ -201,9 +323,9 @@ struct DashboardView: View {
 
     private var categoryCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("按键类型", subtitle: "今天")
+            sectionTitle("按键类型", subtitle: usagePeriod == .day ? selectedPeriodLabel : "所选周")
             if categories.isEmpty {
-                Text("开始统计后，这里会显示按键类型分布。")
+                Text("所选范围暂无记录。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(Array(categories.enumerated()), id: \.offset) { entry in

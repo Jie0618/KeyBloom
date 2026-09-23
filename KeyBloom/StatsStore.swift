@@ -34,12 +34,15 @@ final class StatsStore: ObservableObject {
     private var terminationObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
     private let fileURL: URL
+    private let legacyFileURL: URL
     private let loginItemOptOutKey = "launchAtLoginDisabledByUser"
 
     init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let directory = support.appendingPathComponent("KeyTrack", isDirectory: true)
+        let directory = support.appendingPathComponent("KeyBloom", isDirectory: true)
         fileURL = directory.appendingPathComponent("keyboard-stats.json")
+        let legacyDirectory = support.appendingPathComponent("KeyTrack", isDirectory: true)
+        legacyFileURL = legacyDirectory.appendingPathComponent("keyboard-stats.json")
         load()
         updateLaunchAtLoginState()
 
@@ -88,6 +91,32 @@ final class StatsStore: ObservableObject {
 
     func stats(for date: Date) -> DayStats {
         days[dateKey(for: date)] ?? DayStats(dateKey: dateKey(for: date))
+    }
+
+    func days(inWeekContaining date: Date) -> [DayStats] {
+        let calendar = Calendar.current
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: date) else {
+            return [stats(for: date)]
+        }
+        return (0..<7).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return nil }
+            return stats(for: day)
+        }
+    }
+
+    func stats(forWeekContaining date: Date) -> DayStats {
+        let weekDays = days(inWeekContaining: date)
+        var combined = DayStats(dateKey: "week-\(weekDays.first?.dateKey ?? dateKey(for: date))")
+        for day in weekDays {
+            combined.total += day.total
+            for (hour, count) in day.hourlyCounts {
+                combined.hourlyCounts[hour, default: 0] += count
+            }
+            for (code, count) in day.keyCodeCounts {
+                combined.keyCodeCounts[code, default: 0] += count
+            }
+        }
+        return combined
     }
 
     func hourlyCount(_ hour: Int) -> Int {
@@ -336,9 +365,20 @@ final class StatsStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let stored = try? JSONDecoder().decode(StoredStats.self, from: data) else { return }
-        days = stored.days
+        if let stored = readStats(from: fileURL) {
+            days = stored.days
+            return
+        }
+
+        // Migrate the existing KeyTrack history once, without deleting its file.
+        guard let legacy = readStats(from: legacyFileURL) else { return }
+        days = legacy.days
+        save()
+    }
+
+    private func readStats(from url: URL) -> StoredStats? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(StoredStats.self, from: data)
     }
 
     private func dateKey(for date: Date) -> String {

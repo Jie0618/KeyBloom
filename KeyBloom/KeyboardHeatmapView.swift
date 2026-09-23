@@ -9,6 +9,7 @@ private struct KeyboardKey: Identifiable {
 
 struct KeyboardHeatmapView: View {
     let day: DayStats
+    let periodLabel: String
 
     @State private var selectedCode: Int?
 
@@ -85,7 +86,7 @@ struct KeyboardHeatmapView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("按键热力图").font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("今天 · 点击按键查看次数")
+                Text("\(periodLabel) · 点击按键查看次数")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -108,7 +109,7 @@ struct KeyboardHeatmapView: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
 
-            Text("按 ANSI 键位显示；只统计键码，不读取输入字符。")
+            Text("功能行读取 HID 按键事件，常见 Mac 键盘上即使 F3 触发 Mission Control，也会按 F3 计数；左右修饰键分别计数。只记录次数，不读取字符。")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(12)
